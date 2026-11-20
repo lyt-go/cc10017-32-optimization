@@ -48,6 +48,14 @@
             >
               {{ action }}
             </button>
+            <button
+              class="link"
+              type="button"
+              :data-testid="`plan-${row.id}`"
+              @click="planSchedule(row)"
+            >
+              生成排程
+            </button>
           </td>
         </tr>
         <tr v-if="!rows.length">
@@ -72,6 +80,95 @@
       </form>
     </div>
 
+    <section class="schedule-panel" data-testid="merge-schedule">
+      <header class="schedule-head">
+        <div>
+          <h3>合并排程数据结果</h3>
+          <p class="page-desc">补数高峰纳入排程：优先文件集与延后分区会一起保存，刷新页面后仍是同一份。</p>
+        </div>
+        <div class="page-actions">
+          <label class="filter-item">
+            <span>冲突处置</span>
+            <select v-model="resolution" data-testid="resolution">
+              <option v-for="item in resolutions" :key="item" :value="item">{{ item }}</option>
+            </select>
+          </label>
+          <button class="btn primary" type="button" data-testid="plan-schedule" @click="planSchedule()">生成合并排程</button>
+        </div>
+      </header>
+
+      <div class="stat-row">
+        <article class="stat-card">
+          <span class="stat-label">优先文件集</span>
+          <strong class="stat-value" data-testid="preferred-count">{{ preferredFiles.length }}</strong>
+        </article>
+        <article class="stat-card">
+          <span class="stat-label">延后分区</span>
+          <strong class="stat-value" data-testid="deferred-count">{{ deferredPartitions.length }}</strong>
+        </article>
+        <article class="stat-card">
+          <span class="stat-label">已合并文件（不重复启动）</span>
+          <strong class="stat-value" data-testid="completed-count">{{ completedFiles.length }}</strong>
+        </article>
+        <article class="stat-card">
+          <span class="stat-label">排程状态</span>
+          <strong class="stat-value" data-testid="schedule-status">{{ schedule?.status ?? '未生成' }}</strong>
+        </article>
+      </div>
+
+      <p v-if="schedule" class="schedule-meta">
+        目标表 {{ schedule.target_table }} · 执行窗口 {{ schedule.execution_window }} ·
+        {{ schedule.resolution }} · 来源版本 {{ schedule.source_version }} · 批次 {{ schedule.batch_no }}
+        <span v-if="schedule.conflict_detail">· 补数高峰冲突：{{ (schedule.conflict_detail.overlap_partitions ?? []).join('、') }}</span>
+      </p>
+
+      <div class="schedule-grid">
+        <div class="schedule-col">
+          <h4>优先文件集</h4>
+          <table class="data-table">
+            <thead><tr><th>文件</th><th>分区</th><th>大小(MB)</th><th>来源版本</th></tr></thead>
+            <tbody>
+              <tr v-for="file in preferredFiles" :key="file.file" :data-testid="`preferred-file-${file.file}`">
+                <td>{{ file.file }}</td><td>{{ file.partition }}</td><td>{{ file.size_mb }}</td><td>{{ file.source_version }}</td>
+              </tr>
+              <tr v-if="!preferredFiles.length"><td colspan="4" class="empty-state">当前批次没有可执行的合并文件</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="schedule-col">
+          <h4>延后分区</h4>
+          <table class="data-table">
+            <thead><tr><th>分区</th><th>状态</th><th>文件数</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr v-for="item in deferredPartitions" :key="item.partition" :data-testid="`deferred-${item.partition}`">
+                <td>{{ item.partition }}</td><td>{{ item.state }}</td><td>{{ item.file_count }}</td><td>{{ item.reason }}</td>
+              </tr>
+              <tr v-if="!deferredPartitions.length"><td colspan="4" class="empty-state">没有延后分区</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div v-if="schedule" class="page-actions schedule-actions">
+        <button
+          v-for="action in scheduleActions"
+          :key="action"
+          class="btn"
+          type="button"
+          :data-testid="`schedule-${action}`"
+          @click="runScheduleAction(action)"
+        >
+          {{ action }}
+        </button>
+      </div>
+
+      <ol v-if="events.length" class="schedule-events" data-testid="schedule-events">
+        <li v-for="event in events" :key="`${event.at}-${event.event}`">
+          {{ event.at }} · {{ event.event }} · {{ event.detail }}
+        </li>
+      </ol>
+    </section>
+
     <footer class="page-foot">
       <span>共 {{ total }} 条合并清理记录</span>
       <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
@@ -80,11 +177,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref } from 'vue'
 
 import { request } from '@/api/client'
-
-type Row = Record<string, string | number | null>
+import { useCrudList, type Row } from '@/composables/useCrudList'
 
 const ENDPOINT = '/api/compact_policy'
 const columns = ["策略编号", "目标表名", "触发条件", "合并并发", "目标文件大小", "最小文件数", "保留快照数", "执行时间窗口"]
@@ -92,97 +188,87 @@ const actions = ["提交校验", "标记生效", "停用策略"]
 const statuses = ["草稿", "待校验", "已生效", "已停用"]
 const metricNames = ["清理策略总数", "待校验策略", "已生效策略"]
 
-const rows = ref<Row[]>([])
-const total = ref(0)
-const errorMessage = ref('')
-const filters = ref<Record<string, string>>({})
-const filterFields = columns.slice(0, 3)
-const showCreate = ref(false)
-const creating = ref(false)
-const createValues = ref<Record<string, string>>({})
-const stats = computed(() => [
-  { label: metricNames[0], value: total.value },
-  { label: metricNames[1], value: rows.value.filter((row) => row.status === statuses[1]).length },
-  { label: metricNames[2], value: rows.value.filter((row) => row.status === statuses[statuses.length - 1]).length },
-])
+const resolutions = ['优先补数', '优先合并']
+const scheduleActions = ['执行合并', '模拟中断', '断点恢复']
+const resolution = ref(resolutions[0])
+const schedule = ref<any>(null)
 
-function resetFilters() {
-  filters.value = {}
-  void reload()
-}
+const {
+  rows, total, errorMessage, filters, filterFields, showCreate, creating, createValues, stats,
+  resetFilters, exportRows, openCreate, submitCreate, runAction, reload: reloadRows,
+} = useCrudList({
+  endpoint: ENDPOINT,
+  columns,
+  actions,
+  statuses,
+  metricNames,
+  filename: 'compact_policy.csv',
+  labels: {
+    exportError: '导出失败，请稍后重试',
+    actionError: '合并清理动作未生效，请稍后重试',
+    createError: '登记失败',
+    listError: '清理策略列表读取失败',
+  },
+})
 
-async function exportRows() {
-  errorMessage.value = ''
-  const query = new URLSearchParams(filters.value).toString()
-  try {
-    const response = await request(`${ENDPOINT}/export?${query}`)
-    if (!response.ok) throw new Error('导出失败，请稍后重试')
-    const url = URL.createObjectURL(await response.blob())
-    const link = document.createElement('a')
-    link.href = url
-    link.download = 'compact_policy.csv'
-    link.click()
-    URL.revokeObjectURL(url)
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '导出失败'
-  }
-}
+const preferredFiles = computed<any[]>(() => schedule.value?.preferred_file_set ?? [])
+const deferredPartitions = computed<any[]>(() => schedule.value?.deferred_partitions ?? [])
+const completedFiles = computed<string[]>(() => schedule.value?.completed_file_set ?? [])
+const events = computed<any[]>(() => [...(schedule.value?.events ?? [])].reverse())
 
-function openCreate() {
-  createValues.value = Object.fromEntries(columns.map((field) => [field, '']))
-  errorMessage.value = ''
-  showCreate.value = true
-}
-
-async function submitCreate() {
-  creating.value = true
-  errorMessage.value = ''
-  try {
-    const response = await request(ENDPOINT, {
-      method: 'POST', body: JSON.stringify(createValues.value),
-    })
-    const payload = await response.json()
-    if (!response.ok || !payload.ok) throw new Error(payload.message || '登记失败')
-    showCreate.value = false
-    await reload()
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '登记失败'
-  } finally {
-    creating.value = false
-  }
-}
-
-async function runAction(action: string, row: Row) {
-  errorMessage.value = ''
-  try {
-    const response = await request(`${ENDPOINT}/${row.id}/actions`, {
-      method: 'POST',
-      body: JSON.stringify({ action }),
-    })
-    if (!response.ok) {
-      throw new Error('合并清理动作未生效，请稍后重试')
-    }
-    await reload()
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '合并清理操作失败'
-  }
+// 排程结果是后端持久化产物：刷新页面直接读回，不在前端重算。
+async function loadSchedule() {
+  const response = await request(`${ENDPOINT}/schedules`)
+  if (!response.ok) throw new Error('合并排程读取失败')
+  const payload = await response.json()
+  const visibleTables = new Set(rows.value.map((row) => String(row['目标表名'] ?? '')))
+  const items = (payload.items ?? []).filter((item: any) => visibleTables.has(item.target_table))
+  const pool = items.length ? items : payload.items ?? []
+  const latest = pool[pool.length - 1] ?? null
+  schedule.value = latest
+  if (latest?.resolution) resolution.value = latest.resolution
 }
 
 async function reload() {
+  await reloadRows()
+  await loadSchedule()
+}
+
+async function applyScheduleResponse(response: Response, fallback: string) {
+  const payload = await response.json()
+  if (!response.ok || !payload.ok) throw new Error(payload.message || fallback)
+  await reload()
+}
+
+async function planSchedule(row?: Row) {
+  const policy = row ?? rows.value.find((item) => item.status === '已生效') ?? rows.value[0]
+  if (!policy) {
+    errorMessage.value = '没有可生成排程的清理策略'
+    return
+  }
   errorMessage.value = ''
-  const query = new URLSearchParams(filters.value as Record<string, string>).toString()
   try {
-    const response = await request(`${ENDPOINT}?${query}`)
-    if (!response.ok) {
-      throw new Error('清理策略列表读取失败')
-    }
-    const payload = await response.json()
-    rows.value = payload.items ?? []
-    total.value = payload.total ?? rows.value.length
+    const response = await request(`${ENDPOINT}/${policy.id}/schedule`, {
+      method: 'POST', body: JSON.stringify({ resolution: resolution.value }),
+    })
+    await applyScheduleResponse(response, '合并排程生成失败')
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '合并清理列表读取失败'
+    errorMessage.value = error instanceof Error ? error.message : '合并排程生成失败'
   }
 }
 
-onMounted(reload)
+async function runScheduleAction(action: string) {
+  if (!schedule.value) return
+  errorMessage.value = ''
+  try {
+    const response = await request(`${ENDPOINT}/schedules/${schedule.value.id}/actions`, {
+      method: 'POST', body: JSON.stringify({ action }),
+    })
+    await applyScheduleResponse(response, '合并排程动作未生效')
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '合并排程操作失败'
+  }
+}
+
+void reload()
 </script>

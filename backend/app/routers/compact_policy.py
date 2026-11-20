@@ -7,7 +7,7 @@ import io
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
-from app.schemas import ActionPayload, ActionResult, EntryPayload, PageResult
+from app.schemas import ActionPayload, ActionResult, EntryPayload, PageResult, SchedulePlanPayload
 from app.services.compact_policy import CompactPolicyService
 
 router = APIRouter(prefix="/api/compact_policy", tags=["合并清理"])
@@ -65,6 +65,33 @@ def export_entries(
         headers={"Content-Disposition": 'attachment; filename="compact_policy.csv"'})
 
 
+@router.get("/schedules", response_model=dict)
+def list_schedules(target_table: str | None = Query(default=None)) -> dict:
+    """合并排程数据结果列表：保留优先文件集与延后分区。"""
+    items = service.list_schedules()
+    if target_table:
+        items = [item for item in items if item.get("target_table") == target_table]
+    return {"items": items, "total": len(items)}
+
+
+@router.get("/schedules/{schedule_id}", response_model=dict)
+def get_schedule(schedule_id: int) -> dict:
+    """读取一份合并排程数据结果；刷新页面后仍是同一份。"""
+    schedule = service.get_schedule_by_id(schedule_id)
+    if schedule is None:
+        raise HTTPException(status_code=404, detail=f"合并排程 {schedule_id} 不存在")
+    return schedule
+
+
+@router.post("/schedules/{schedule_id}/actions", response_model=ActionResult)
+def run_schedule_action(schedule_id: int, payload: ActionPayload) -> ActionResult:
+    """执行合并、模拟中断、断点恢复；已执行文件集在任何动作下都不会重复启动。"""
+    schedule, message = service.run_schedule_action(schedule_id, payload.action.strip())
+    if schedule is None:
+        return ActionResult(ok=False, message=message)
+    return ActionResult(ok=True, message=message, entry=schedule)
+
+
 @router.get("/{entry_id}", response_model=dict)
 def get_entry(entry_id: int) -> dict:
     """读取单条清理策略明细；不存在时给出可读的错误说明。"""
@@ -81,6 +108,15 @@ def create_entry(payload: dict[str, object]) -> ActionResult:
     if missing:
         return ActionResult(ok=False, message=f"缺少必填字段：{'、'.join(missing)}")
     return ActionResult(ok=True, message="清理策略已登记", entry=entry)
+
+
+@router.post("/{entry_id}/schedule", response_model=ActionResult)
+def plan_schedule(entry_id: int, payload: SchedulePlanPayload) -> ActionResult:
+    """为清理策略生成合并排程数据结果：补数状态纳入排程，冲突按优先级处置。"""
+    schedule, message = service.plan_schedule(entry_id, payload.resolution.strip())
+    if schedule is None:
+        return ActionResult(ok=False, message=message)
+    return ActionResult(ok=True, message=message, entry=schedule)
 
 
 @router.post("/{entry_id}/actions", response_model=ActionResult)

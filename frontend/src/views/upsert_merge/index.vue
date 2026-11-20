@@ -80,11 +80,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-
-import { request } from '@/api/client'
-
-type Row = Record<string, string | number | null>
+import { useCrudList } from '@/composables/useCrudList'
 
 const ENDPOINT = '/api/upsert_merge'
 const columns = ["策略编号", "目标表名", "合并键列", "插入列", "更新列", "删除标记", "排序字段", "合并引擎"]
@@ -92,97 +88,16 @@ const actions = ["提交校验", "标记生效", "停用策略"]
 const statuses = ["草稿", "待校验", "已生效", "已停用"]
 const metricNames = ["合并策略总数", "待校验策略", "已生效策略"]
 
-const rows = ref<Row[]>([])
-const total = ref(0)
-const errorMessage = ref('')
-const filters = ref<Record<string, string>>({})
-const filterFields = columns.slice(0, 3)
-const showCreate = ref(false)
-const creating = ref(false)
-const createValues = ref<Record<string, string>>({})
-const stats = computed(() => [
-  { label: metricNames[0], value: total.value },
-  { label: metricNames[1], value: rows.value.filter((row) => row.status === statuses[1]).length },
-  { label: metricNames[2], value: rows.value.filter((row) => row.status === statuses[statuses.length - 1]).length },
-])
 
-function resetFilters() {
-  filters.value = {}
-  void reload()
-}
-
-async function exportRows() {
-  errorMessage.value = ''
-  const query = new URLSearchParams(filters.value).toString()
-  try {
-    const response = await request(`${ENDPOINT}/export?${query}`)
-    if (!response.ok) throw new Error('导出失败，请稍后重试')
-    const url = URL.createObjectURL(await response.blob())
-    const link = document.createElement('a')
-    link.href = url
-    link.download = 'upsert_merge.csv'
-    link.click()
-    URL.revokeObjectURL(url)
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '导出失败'
-  }
-}
-
-function openCreate() {
-  createValues.value = Object.fromEntries(columns.map((field) => [field, '']))
-  errorMessage.value = ''
-  showCreate.value = true
-}
-
-async function submitCreate() {
-  creating.value = true
-  errorMessage.value = ''
-  try {
-    const response = await request(ENDPOINT, {
-      method: 'POST', body: JSON.stringify(createValues.value),
-    })
-    const payload = await response.json()
-    if (!response.ok || !payload.ok) throw new Error(payload.message || '登记失败')
-    showCreate.value = false
-    await reload()
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '登记失败'
-  } finally {
-    creating.value = false
-  }
-}
-
-async function runAction(action: string, row: Row) {
-  errorMessage.value = ''
-  try {
-    const response = await request(`${ENDPOINT}/${row.id}/actions`, {
-      method: 'POST',
-      body: JSON.stringify({ action }),
-    })
-    if (!response.ok) {
-      throw new Error('增量合并动作未生效，请稍后重试')
-    }
-    await reload()
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '增量合并操作失败'
-  }
-}
-
-async function reload() {
-  errorMessage.value = ''
-  const query = new URLSearchParams(filters.value as Record<string, string>).toString()
-  try {
-    const response = await request(`${ENDPOINT}?${query}`)
-    if (!response.ok) {
-      throw new Error('合并策略列表读取失败')
-    }
-    const payload = await response.json()
-    rows.value = payload.items ?? []
-    total.value = payload.total ?? rows.value.length
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '增量合并列表读取失败'
-  }
-}
-
-onMounted(reload)
+const {
+  rows, total, errorMessage, filters, filterFields, showCreate, creating, createValues, stats,
+  resetFilters, exportRows, openCreate, submitCreate, runAction, reload,
+} = useCrudList({
+  endpoint: ENDPOINT,
+  columns,
+  actions,
+  statuses,
+  metricNames,
+  filename: 'upsert_merge.csv',
+})
 </script>

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.services._common import list_module_entries
+from app.services.compact_schedule import compact_schedule_service
 from app.store import store
 
 MODULE = "compact_policy"
@@ -23,16 +25,9 @@ class CompactPolicyService:
         page: int = 1,
         size: int = 20,
     ) -> tuple[list[dict[str, Any]], int]:
-        rows = store.rows(MODULE)
-        for field, expected in (filters or {}).items():
-            rows = [row for row in rows if expected.casefold() in str(row.get(field, "")).casefold()]
-        if keyword:
-            rows = [row for row in rows if keyword.casefold() in str(row.get("策略编号", "")).casefold()]
-        if status:
-            rows = [row for row in rows if row.get("status") == status]
-        total = len(rows)
-        start = (page - 1) * size
-        return rows[start:start + size], total
+        return list_module_entries(
+            MODULE, "策略编号", filters=filters, keyword=keyword, status=status, page=page, size=size
+        )
 
     def get_entry(self, entry_id: int) -> dict[str, Any] | None:
         return store.find(MODULE, entry_id)
@@ -63,3 +58,30 @@ class CompactPolicyService:
         entry["pending"] = target != STATUS_ORDER[-1]
         entry["abnormal"] = action in NEGATIVE_ACTIONS
         return entry, f"清理策略已{action}"
+
+    # ── 合并排程：与流式补数、管道维护链共用 compact_schedule_service ──
+
+    def list_schedules(self) -> list[dict[str, Any]]:
+        return compact_schedule_service.list_schedules()
+
+    def latest_schedule(self, target_table: str | None) -> dict[str, Any] | None:
+        return compact_schedule_service.latest_for_table(target_table)
+
+    def get_schedule(self, policy_id: int) -> dict[str, Any] | None:
+        """策略当前的合并排程数据结果；生成后写入 store，刷新页面仍能读回。"""
+        return compact_schedule_service.latest_for_policy(policy_id)
+
+    def get_schedule_by_id(self, schedule_id: int) -> dict[str, Any] | None:
+        return compact_schedule_service.get_schedule(schedule_id)
+
+    def plan_schedule(self, policy_id: int, resolution: str) -> tuple[dict[str, Any] | None, str]:
+        return compact_schedule_service.plan(policy_id, resolution)
+
+    def run_schedule_action(self, schedule_id: int, action: str) -> tuple[dict[str, Any] | None, str]:
+        if action == "执行合并":
+            return compact_schedule_service.execute(schedule_id)
+        if action == "模拟中断":
+            return compact_schedule_service.interrupt(schedule_id)
+        if action == "断点恢复":
+            return compact_schedule_service.resume(schedule_id)
+        return None, f"动作「{action}」不属于合并排程可执行范围"

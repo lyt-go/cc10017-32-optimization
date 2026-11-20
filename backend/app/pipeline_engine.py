@@ -14,6 +14,7 @@ import json
 from datetime import datetime, timedelta
 from typing import Any
 
+from app.services.compact_schedule import compact_schedule_service
 from app.store import store
 
 
@@ -374,6 +375,9 @@ class PipelineEngine:
         backfill["status"] = "已完成"
         backfill["pending"] = False
 
+        # 合并排程是合并清理的唯一结果载体：补数结束后重排延后分区并执行合并。
+        schedule = compact_schedule_service.execute_after_backfill(backfill)
+
         # 触发合并产物
         compact_result = {
             "backfill_id": backfill_id,
@@ -382,6 +386,12 @@ class PipelineEngine:
             "compact_policy_id": compact.get("id"),
             "merged_files": backfilled_count // 10 + 1,
             "compacted_at": datetime.now().isoformat(),
+            "merge_schedule_id": schedule.get("id") if schedule else None,
+            "completed_file_set": list(schedule.get("completed_file_set", [])) if schedule else [],
+            "deferred_partitions": [
+                item.get("partition") for item in (schedule.get("deferred_partitions", []) if schedule else [])
+            ],
+            "source_version": schedule.get("source_version") if schedule else None,
         }
         self._ensure_artifact_table("compact_results")
         store.rows("compact_results").append(compact_result)
@@ -584,6 +594,7 @@ class PipelineEngine:
             "materialized_refresh_log": len(store.rows("materialized_refresh_log")),
             "sink_dispatch_queue": len(store.rows("sink_dispatch_queue")),
             "compact_results": len(store.rows("compact_results")),
+            "compact_merge_schedules": len(store.rows("compact_merge_schedules")),
             "ttl_applied_log": len(store.rows("ttl_applied_log")),
             "realtime_metric_results": len(store.rows("realtime_metric_results")),
         }

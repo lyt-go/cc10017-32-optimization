@@ -35,6 +35,12 @@ class ActionPayload(BaseModel):
     remark: str | None = None
 
 
+class SchedulePlanPayload(BaseModel):
+    """生成合并排程时选择冲突处置口径：优先补数或优先合并。"""
+
+    resolution: str = "优先补数"
+
+
 
 class TopicRegistryEntry(BaseModel):
     """数据主题明细结构。"""

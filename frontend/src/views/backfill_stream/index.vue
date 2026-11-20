@@ -26,6 +26,20 @@
       <strong>{{ selectedItem.name || selectedItem.label }}</strong> — 状态：{{ selectedItem.status }}
       <div style="margin-top:4px;">{{ selectedItem.logs || '暂无日志' }}</div>
     </div>
+    <section class="peak-panel" data-testid="peak-panel">
+      <strong>补数高峰分区</strong>
+      <span class="page-desc">标记仍占用文件的分区；补数完成前这些分区只能处于等待合并状态。</span>
+      <table class="data-table" style="margin-top:8px">
+        <thead><tr><th>补数任务</th><th>目标表</th><th>分区</th><th>状态</th><th>合并排程</th></tr></thead>
+        <tbody>
+          <tr v-for="item in peakPartitions" :key="`${item.backfill_id}-${item.partition}`" :data-testid="`peak-${item.partition}`">
+            <td>{{ item.backfill_code }}</td><td>{{ item.target_table }}</td><td>{{ item.partition }}</td>
+            <td>{{ item.state }}</td><td>#{{ item.schedule_id }}</td>
+          </tr>
+          <tr v-if="!peakPartitions.length"><td colspan="5" class="empty-state">当前没有补数高峰占用的分区</td></tr>
+        </tbody>
+      </table>
+    </section>
     <div v-if="showCreate" class="modal-backdrop" data-testid="create-modal">
       <form class="modal" @submit.prevent="submitCreate"><h3>登记补数任务</h3>
         <label v-for="field in columns.slice(0,3)" :key="field" class="create-field"><span>{{ field }}</span><input v-model="createValues[field]" :placeholder="`请输入${field}`" required /></label>
@@ -49,11 +63,24 @@ const dateFrom = ref(''); const dateTo = ref('')
 const errorMessage = ref(''); const showCreate = ref(false)
 const createValues = ref<Record<string,string>>({})
 const allItems = ref<any[]>([])
+const peakPartitions = ref<any[]>([])
 function barLeft(item: any) { const all = allItems.value.filter(i => i.start && i.end); if(!all.length) return 0; const min = Math.min(...all.map(i => new Date(i.start).getTime())); const max = Math.max(...all.map(i => new Date(i.end).getTime())); const range = max - min || 86400000; return ((new Date(item.start).getTime() - min) / range) * 100 }
 function barWidth(item: any) { const all = allItems.value.filter(i => i.start && i.end); if(!all.length) return 20; const min = Math.min(...all.map(i => new Date(i.start).getTime())); const max = Math.max(...all.map(i => new Date(i.end).getTime())); const range = max - min || 86400000; return Math.max(5, ((new Date(item.end).getTime() - new Date(item.start).getTime()) / range) * 100) }
 function selectItem(item: any) { selectedItem.value = selectedItem.value?.id === item.id ? null : item }
 async function reload() {
   try { const res = await request(ENDPOINT); const data = await res.json(); allItems.value = data.items || []; applyFilter() } catch(e) { errorMessage.value = '加载失败' }
+  await loadPeakPartitions()
+}
+// 补数高峰分区来自合并排程结果：跨模块读取，页面刷新后与排程同步。
+async function loadPeakPartitions() {
+  try {
+    const res = await request(`${ENDPOINT}/peak-partitions`)
+    if (!res.ok) throw new Error('补数高峰读取失败')
+    const data = await res.json()
+    peakPartitions.value = data.items || []
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '补数高峰读取失败'
+  }
 }
 function applyFilter() {
   let items = allItems.value

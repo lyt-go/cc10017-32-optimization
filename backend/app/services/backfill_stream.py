@@ -1,9 +1,14 @@
-"""流式补数 时间线服务：生成作业时间序列和示例数据。"""
+"""流式补数 时间线服务：生成作业时间序列和示例数据。
+
+增强：补数开始/结束时接收合并清理的合并排程数据结果，标记仍占用文件的分区，
+并把补数高峰写回同一份排程（由 compact_schedule_service 统一维护）。
+"""
 from __future__ import annotations
 
 from datetime import date, timedelta
 from typing import Any
 
+from app.services.compact_schedule import compact_schedule_service
 from app.store import store
 
 MODULE = "backfill_stream"
@@ -57,4 +62,41 @@ class BackfillStreamService:
         entry["status"] = target
         entry["pending"] = target != STATUS_ORDER[-1]
         entry["abnormal"] = action in NEGATIVE_ACTIONS
+
+        schedule = None
+        if target == "运行中":
+            schedule, _, _ = compact_schedule_service.mark_backfill(entry)
+        elif action in ("确认完成", "取消补数"):
+            schedule = compact_schedule_service.release_after_backfill(entry)
+        if schedule is not None:
+            entry["merge_schedule_id"] = schedule.get("id")
         return entry, f"补数任务已{action}"
+
+    def get_merge_schedule(self, entry_id: int) -> dict[str, Any] | None:
+        """补数任务关联的合并排程：同表最近一份，含仍被占用的分区。"""
+        entry = store.find(MODULE, entry_id)
+        if entry is None:
+            return None
+        return compact_schedule_service.latest_for_table(str(entry.get("目标表名") or ""))
+
+    def get_peak_partitions(self) -> list[dict[str, Any]]:
+        """补数高峰分区：仍占用文件、在补数完成前只能等待合并的分区。"""
+        peaks: list[dict[str, Any]] = []
+        for entry in store.rows(MODULE):
+            if entry.get("status") != "运行中":
+                continue
+            schedule = compact_schedule_service.latest_for_table(str(entry.get("目标表名") or ""))
+            if schedule is None:
+                continue
+            occupied = {item["partition"] for item in schedule.get("occupied_partitions", [])}
+            for item in schedule.get("deferred_partitions", []):
+                if item.get("partition") in occupied:
+                    peaks.append({
+                        "backfill_id": entry.get("id"),
+                        "backfill_code": entry.get("任务编号"),
+                        "target_table": entry.get("目标表名"),
+                        "partition": item.get("partition"),
+                        "state": item.get("state"),
+                        "schedule_id": schedule.get("id"),
+                    })
+        return peaks

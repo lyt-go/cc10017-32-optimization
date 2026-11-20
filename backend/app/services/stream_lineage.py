@@ -12,13 +12,6 @@ ACTION_RULES = {"提交校验": "待校验", "标记生效": "已生效", "停�
 NEGATIVE_ACTIONS = ["停用记录"]
 
 
-def csv_cell(value: Any) -> str:
-    text = str(value) if value is not None else ""
-    if text and text[0] in "=+-@":
-        text = "'" + text
-    return '"' + text.replace('"', '""') + '"'
-
-
 class StreamLineageService:
     def get_graph(self) -> dict[str, Any]:
         rows = store.rows(MODULE)

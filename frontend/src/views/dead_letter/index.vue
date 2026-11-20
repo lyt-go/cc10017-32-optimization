@@ -80,11 +80,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-
-import { request } from '@/api/client'
-
-type Row = Record<string, string | number | null>
+import { useCrudList } from '@/composables/useCrudList'
 
 const ENDPOINT = '/api/dead_letter'
 const columns = ["记录编号", "原始主题", "原始分区", "失败原因", "原始消息体", "重试次数", "入库时间", "处置状态"]
@@ -92,97 +88,16 @@ const actions = ["加入处置", "标记重放", "标记丢弃"]
 const statuses = ["草稿", "待处置", "已重放", "已丢弃"]
 const metricNames = ["死信记录总数", "待处置记录", "已重放记录"]
 
-const rows = ref<Row[]>([])
-const total = ref(0)
-const errorMessage = ref('')
-const filters = ref<Record<string, string>>({})
-const filterFields = columns.slice(0, 3)
-const showCreate = ref(false)
-const creating = ref(false)
-const createValues = ref<Record<string, string>>({})
-const stats = computed(() => [
-  { label: metricNames[0], value: total.value },
-  { label: metricNames[1], value: rows.value.filter((row) => row.status === statuses[1]).length },
-  { label: metricNames[2], value: rows.value.filter((row) => row.status === statuses[statuses.length - 1]).length },
-])
 
-function resetFilters() {
-  filters.value = {}
-  void reload()
-}
-
-async function exportRows() {
-  errorMessage.value = ''
-  const query = new URLSearchParams(filters.value).toString()
-  try {
-    const response = await request(`${ENDPOINT}/export?${query}`)
-    if (!response.ok) throw new Error('导出失败，请稍后重试')
-    const url = URL.createObjectURL(await response.blob())
-    const link = document.createElement('a')
-    link.href = url
-    link.download = 'dead_letter.csv'
-    link.click()
-    URL.revokeObjectURL(url)
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '导出失败'
-  }
-}
-
-function openCreate() {
-  createValues.value = Object.fromEntries(columns.map((field) => [field, '']))
-  errorMessage.value = ''
-  showCreate.value = true
-}
-
-async function submitCreate() {
-  creating.value = true
-  errorMessage.value = ''
-  try {
-    const response = await request(ENDPOINT, {
-      method: 'POST', body: JSON.stringify(createValues.value),
-    })
-    const payload = await response.json()
-    if (!response.ok || !payload.ok) throw new Error(payload.message || '登记失败')
-    showCreate.value = false
-    await reload()
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '登记失败'
-  } finally {
-    creating.value = false
-  }
-}
-
-async function runAction(action: string, row: Row) {
-  errorMessage.value = ''
-  try {
-    const response = await request(`${ENDPOINT}/${row.id}/actions`, {
-      method: 'POST',
-      body: JSON.stringify({ action }),
-    })
-    if (!response.ok) {
-      throw new Error('死信处理动作未生效，请稍后重试')
-    }
-    await reload()
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '死信处理操作失败'
-  }
-}
-
-async function reload() {
-  errorMessage.value = ''
-  const query = new URLSearchParams(filters.value as Record<string, string>).toString()
-  try {
-    const response = await request(`${ENDPOINT}?${query}`)
-    if (!response.ok) {
-      throw new Error('死信记录列表读取失败')
-    }
-    const payload = await response.json()
-    rows.value = payload.items ?? []
-    total.value = payload.total ?? rows.value.length
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '死信处理列表读取失败'
-  }
-}
-
-onMounted(reload)
+const {
+  rows, total, errorMessage, filters, filterFields, showCreate, creating, createValues, stats,
+  resetFilters, exportRows, openCreate, submitCreate, runAction, reload,
+} = useCrudList({
+  endpoint: ENDPOINT,
+  columns,
+  actions,
+  statuses,
+  metricNames,
+  filename: 'dead_letter.csv',
+})
 </script>

@@ -75,5 +75,27 @@ npm run dev
 - 列表接口统一返回 `{ items, total, page, size }`，动作接口统一返回 `{ ok, message }`。
 - 状态流转只允许在 `app/services` 里改，路由层不做业务判断。
 
+## 合并排程（维护链）
+
+合并清理的固定时间窗口不再无脑启动小文件合并：排程把补数高峰纳入判断，
+生成一份**合并排程数据结果**（`compact_merge_schedules`），同时保留：
+
+- `preferred_file_set`：本批优先合并的文件及其来源版本；
+- `deferred_partitions`：延后分区，被补数占用的分区状态为「等待合并」；
+- `completed_file_set`：已完整执行的合并文件，断点恢复后不会再次启动。
+
+同一份模型被三个入口共用（`backend/app/services/compact_schedule.py`）：
+
+| 入口 | 行为 |
+| --- | --- |
+| 合并清理页 `POST /api/compact_policy/{id}/schedule` | 生成排程，冲突处置可选「优先补数」或「优先合并」 |
+| 合并清理页 `POST /api/compact_policy/schedules/{id}/actions` | 执行合并 / 模拟中断 / 断点恢复 |
+| 流式补数 `POST /api/backfill_stream/{id}/actions` | 启动补数标记占用分区，完成后重排延后分区 |
+| 管道维护链 `POST /api/pipeline/maintenance/backfill/{id}/compact` | 补数后执行合并，产物写回同一份排程 |
+
+两种冲突处置留下的下游结果不同：优先补数会整窗顺延（延后分区与残留小文件更多，
+查询延迟更高），优先合并只合并未被占用的分区。排程中断后恢复只重排延后分区，
+已执行文件集原样保留。
+
 领域：数据工程
 子方向：数仓与数据湖

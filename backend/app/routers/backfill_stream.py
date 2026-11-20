@@ -1,13 +1,12 @@
 """流式补数 时间线接口：返回作业时间序列结构。"""
 from __future__ import annotations
 
-import csv
-import io
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
+from app.exporting import csv_download_records
 from app.schemas import ActionPayload, ActionResult, EntryPayload
 from app.services.backfill_stream import BackfillStreamService
 
@@ -16,12 +15,6 @@ service = BackfillStreamService()
 LIST_FIELDS = ["任务编号", "目标表名", "起始偏移", "截止偏移", "重放速率", "并行度", "覆盖策略", "结果校验"]
 STATUSES = ["草稿", "运行中", "已完成", "已取消"]
 
-
-def csv_cell(value: Any) -> str:
-    text = str(value) if value is not None else ""
-    if text and text[0] in "=+-@":
-        text = "'" + text
-    return '"' + text.replace('"', '""') + '"'
 
 
 @router.get("")
@@ -32,18 +25,23 @@ def list_entries() -> dict[str, Any]:
 
 @router.get("/export")
 def export_entries() -> StreamingResponse:
-    items = service.get_timeline()
-    buf = io.StringIO(newline="")
-    writer = csv.writer(buf)
-    all_keys = ["id"]
-    if items:
-        all_keys = list(items[0].keys())
-    writer.writerow(all_keys)
-    for item in items:
-        writer.writerow([csv_cell(item.get(k, "")) for k in all_keys])
-    buf.seek(0)
-    return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv; charset=utf-8",
-                             headers={"Content-Disposition": "attachment; filename=backfill_stream.csv"})
+    return csv_download_records(service.get_timeline(), "backfill_stream")
+
+
+@router.get("/peak-partitions")
+def get_peak_partitions() -> dict[str, Any]:
+    """补数高峰分区：补数完成前仍占用文件、只能等待合并的分区。"""
+    items = service.get_peak_partitions()
+    return {"items": items, "total": len(items)}
+
+
+@router.get("/{entry_id}/merge-schedule")
+def get_merge_schedule(entry_id: int) -> dict[str, Any]:
+    """跨模块读取该补数任务关联的合并排程数据结果。"""
+    schedule = service.get_merge_schedule(entry_id)
+    if schedule is None:
+        raise HTTPException(status_code=404, detail=f"补数任务 {entry_id} 暂无合并排程")
+    return schedule
 
 
 @router.get("/{entry_id}")
